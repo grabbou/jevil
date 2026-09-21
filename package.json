@@ -9,7 +9,12 @@
   },
   "scripts": {
     "qa": "node src/cli.mjs",
-    "check": "node --check src/agent.mjs && node --check src/device.mjs && node --check src/cli.mjs"
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.mjs",
+    "benchmark:build": "node benchmarks/build-fixture.mjs",
+    "benchmark": "node benchmarks/benchmark.mjs",
+    "benchmark:analyze": "node benchmarks/analyze.mjs",
+    "benchmark:export": "node benchmarks/export.mjs"
   },
   "exports": "./src/index.mjs",
   "dependencies": {
