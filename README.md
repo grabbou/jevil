@@ -48,6 +48,47 @@ npm run qa -- --app com.example.shop --platform ios \
   'Search for "Canvas backpack" and verify that its product page opens.'
 ```
 
+## Experimental execution strategies
+
+The default `baseline` strategy keeps the original settle-and-observe behavior. Two opt-in strategies reduce repeated work:
+
+```sh
+npm run qa -- --app com.example.app --strategy single-capture "Your task"
+npm run qa -- --app com.example.app --strategy form-plan \
+  'Fill Name with "Ada" and Email with "ada@example.com", save, and verify the confirmation.'
+```
+
+- `single-capture` skips the extra settle operation for press/fill/scroll. The next iteration still captures a full screen with fresh references. Loading screens can require additional decisions and waits.
+- `form-plan` also asks Jev to map independent form fields to supplied values in one request. Additional fills require a fresh full snapshot, the same identifiable form, a unique enabled target, and a new reference. A rejected plan returns to an ordinary model decision. Submit, navigation, and QA verdicts always require a model decision.
+
+Every planned fill consumes a step and honors cancellation and `--min-confidence`. Reports mark these steps with `source: "plan"` and `planOriginStep`; they do not count as additional model calls. A plan cannot bypass `--max-steps`.
+
+These strategies are experimental. The form guard checks known modal/keyboard roles; it cannot detect every overlay or dependency between fields. Where iOS omits visibility/hittability metadata, it requires complete viewport geometry and retains agent-device's native interaction guards. Geometry is not proof of general visibility. Use baseline for flows whose dynamic behavior has not been validated. Benchmarks cover a small native iOS fixture, not Android or production apps.
+
+The same controls are available from JavaScript:
+
+```js
+import { AgentDevice, FormPlanModel, JevDeviceAgent } from './src/index.mjs';
+
+const agent = new JevDeviceAgent({
+  model: new FormPlanModel(),
+  device: new AgentDevice({ app: 'com.example.app', settle: false }),
+  formPlans: true,
+});
+```
+
+Run `npm test` and `npm run check` before submitting changes; neither requires credentials or a device.
+
+To reproduce the controlled iOS benchmark, build the fixture with `npm run benchmark:build`, install `artifacts/fixture/JevBench.app` on a dedicated booted simulator, then run:
+
+```sh
+npm run benchmark -- --udid YOUR_SIMULATOR_UDID --model jev-1.13.0 --rounds 10 --output artifacts/benchmark
+npm run benchmark:analyze -- artifacts/benchmark/results.json
+npm run benchmark:export -- artifacts/benchmark/results.json artifacts/public-results.json
+```
+
+This runs 10 rounds of three tasks for each strategy, checks each outcome independently, and records source hashes. The primary timer excludes app setup and final screenshot/cleanup; full trial time is recorded separately. Use `--record --rounds 1 --output artifacts/demo` for separate demonstration videos, which must not be pooled with unrecorded timing samples. Live runs require Xcode and your own TypeSafe API key. Never commit `.env` or unsanitized artifacts; the export command excludes personal paths, device IDs, and raw screen data.
+
 ## Output
 
 The CLI prints each selected action, then the result, startup time, run duration, token usage, estimated inference cost, and video path. Run details are saved as JSON.

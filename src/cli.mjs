@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { JevDeviceAgent, JevModel, AgentDevice } from './index.mjs';
+import { JevDeviceAgent, JevModel, FormPlanModel, AgentDevice } from './index.mjs';
 
 const HELP = `Usage: npm run qa -- --app <bundle/package ID> [options] "Task to perform"
 
@@ -11,6 +11,7 @@ const HELP = `Usage: npm run qa -- --app <bundle/package ID> [options] "Task to 
   --device <name>            Select a device by name
   --udid <id>                Pin an Apple simulator/device
   --serial <id>              Pin an Android emulator/device
+  --strategy <name>          baseline (default), single-capture, or form-plan (experimental)
   --model <id>               Default: TYPESAFE_MODEL or jev-latest
   --max-steps <n>            Default: 40
   --min-confidence <0..1>    Action cutoff; default: 0 (disabled)
@@ -30,6 +31,7 @@ async function main() {
   const { values: v, positionals } = parseArgs({ allowPositionals: true, options: {
     app: { type: 'string' }, platform: { type: 'string', default: 'ios' },
     device: { type: 'string' }, udid: { type: 'string' }, serial: { type: 'string' },
+    strategy: { type: 'string', default: 'baseline' },
     model: { type: 'string' }, 'max-steps': { type: 'string', default: '40' },
     'min-confidence': { type: 'string', default: '0' }, timeout: { type: 'string', default: '180' },
     scope: { type: 'string' }, artifacts: { type: 'string', default: 'artifacts' },
@@ -40,10 +42,12 @@ async function main() {
   if (!v.app || !prompt) throw new Error('Provide --app and a task prompt. Run npm run qa -- --help for examples.');
   // Keep this process's daemon state separate from other agent-device projects.
   process.env.AGENT_DEVICE_STATE_DIR ||= resolve('.agent-device');
-  const model = new JevModel({ model: v.model || process.env.TYPESAFE_MODEL || 'jev-latest' });
+  if (!['baseline', 'single-capture', 'form-plan'].includes(v.strategy)) throw new Error('Unknown strategy. Use baseline, single-capture, or form-plan.');
+  const Model = v.strategy === 'form-plan' ? FormPlanModel : JevModel;
+  const model = new Model({ model: v.model || process.env.TYPESAFE_MODEL || 'jev-latest' });
   const device = new AgentDevice({ app: v.app, platform: v.platform, device: v.device, udid: v.udid,
-    serial: v.serial, scope: v.scope, session: `jev-${randomUUID()}`, cwd: process.cwd() });
-  const agent = new JevDeviceAgent({ model, device, maxSteps: Number(v['max-steps']),
+    serial: v.serial, scope: v.scope, settle: v.strategy === 'baseline', session: `jev-${randomUUID()}`, cwd: process.cwd() });
+  const agent = new JevDeviceAgent({ model, device, formPlans: v.strategy === 'form-plan', maxSteps: Number(v['max-steps']),
     minConfidence: Number(v['min-confidence']), timeoutMs: Number(v.timeout) * 1000,
     inputUsdPerMillion: Number(process.env.JEV_INPUT_USD_PER_MILLION || '0.042'),
     artifactsDir: v.artifacts, record: !v['no-record'],

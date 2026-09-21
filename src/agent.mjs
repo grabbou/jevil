@@ -3,20 +3,22 @@ import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { buildActions, prepareSnapshot, fingerprint, assertReadable } from './actions.mjs';
 import { promptInputs } from './inputs.mjs';
+import { resolvePlannedFill } from './form-plan.mjs';
 
 function finite(value, name, min, max = Infinity) {
   if (!Number.isFinite(value) || value < min || value > max) throw new Error(`Invalid ${name}.`);
 }
 
 export class JevDeviceAgent {
-  constructor({ model, device, maxSteps = 40, minConfidence = 0, timeoutMs = 180_000, inputUsdPerMillion = 0.042, artifactsDir = 'artifacts', record = true, onStep } = {}) {
+  constructor({ model, device, maxSteps = 40, minConfidence = 0, timeoutMs = 180_000, inputUsdPerMillion = 0.042, artifactsDir = 'artifacts', record = true, formPlans = false, onStep } = {}) {
     if (!model?.decide || !device?.snapshot) throw new Error('model and device adapters are required.');
     finite(maxSteps, 'maxSteps', 1, 1000);
     if (!Number.isInteger(maxSteps)) throw new Error('maxSteps must be an integer.');
     finite(minConfidence, 'minConfidence', 0, 1);
     finite(timeoutMs, 'timeoutMs', 1, 3_600_000);
     finite(inputUsdPerMillion, 'inputUsdPerMillion', 0);
-    Object.assign(this, { model, device, maxSteps, minConfidence, timeoutMs, inputUsdPerMillion, artifactsDir, record, onStep });
+    if (typeof formPlans !== 'boolean') throw new Error('formPlans must be a boolean.');
+    Object.assign(this, { model, device, maxSteps, minConfidence, timeoutMs, inputUsdPerMillion, artifactsDir, record, formPlans, onStep });
     this.running = false;
   }
 
@@ -50,6 +52,7 @@ export class JevDeviceAgent {
     };
     let opened = false, recording = false, previous = '', repeats = 0;
     let runStarted = null;
+    let pendingPlan = null;
     try {
       await mkdir(directory, { recursive: true });
       await writeFile(join(directory, 'trace.jsonl'), '');
@@ -64,19 +67,39 @@ export class JevDeviceAgent {
       runStarted = performance.now();
       for (let step = 1; step <= this.maxSteps; step++) {
         signal.throwIfAborted();
-        const snapshot = await this.device.snapshot();
+        const snapshot = pendingPlan ? await this.device.snapshot({ forceFull: true }) : await this.device.snapshot();
         await writeFile(join(directory, `snapshot-${step}.json`), JSON.stringify(snapshot, null, 2));
         assertReadable(snapshot);
         signal.throwIfAborted();
         const actions = buildActions(snapshot, inputs);
         const state = { task: prompt, screen: prepareSnapshot(snapshot), previousScreen, previousAction };
-        const decision = await query('decide', { state, actions });
+        let decision, action, planOriginStep;
+        if (pendingPlan) {
+          const plan = pendingPlan;
+          const planned = plan.actions.shift();
+          signal.throwIfAborted();
+          if (planned.confidence >= this.minConfidence) action = resolvePlannedFill(planned, plan.snapshot, snapshot, inputs);
+          if (action) {
+            decision = { choice: action.id, confidence: planned.confidence, model: plan.model, latencyMs: 0 };
+            planOriginStep = plan.originStep;
+            if (!plan.actions.length) pendingPlan = null;
+          } else pendingPlan = null;
+        }
+        if (!decision) {
+          decision = await query('decide', { state, actions });
+          action = actions.find(a => a.id === decision.choice);
+          const plan = this.formPlans ? legalFillPlan(decision.plannedActions, action, actions) : null;
+          if (plan) {
+            decision = { ...decision, confidence: Math.min(decision.confidence, plan[0].confidence) };
+            pendingPlan = plan.length > 1 ? { actions: plan.slice(1), snapshot, originStep: step, model: decision.model } : null;
+          }
+        }
         const usage = decision.usage;
-        const action = actions.find(a => a.id === decision.choice);
         if (!action || !Number.isFinite(decision.confidence) || decision.confidence < 0 || decision.confidence > 1) throw new Error('Invalid model decision.');
         const entry = { executed: false, step, choice: action.id, kind: action.kind, action: action.description, ref: action.ref,
           confidence: decision.confidence, probabilities: decision.probabilities, latencyMs: decision.latencyMs ?? 0,
-          model: decision.model, usage, snapshot: `snapshot-${step}.json` };
+          model: decision.model, usage, snapshot: `snapshot-${step}.json`,
+          ...(planOriginStep == null ? {} : { source: 'plan', planOriginStep }) };
         result.steps.push(entry);
         await appendFile(join(directory, 'trace.jsonl'), JSON.stringify(entry) + '\n');
         this.onStep?.(entry);
@@ -142,4 +165,18 @@ function safeError(error) {
   const key = process.env.TYPESAFE_API_KEY;
   if (key) message = message.replaceAll(key, '[REDACTED]');
   return message;
+}
+
+function legalFillPlan(plan, selected, actions) {
+  if (!Array.isArray(plan) || plan.length < 1 || selected?.kind !== 'fill') return null;
+  const legal = [];
+  const targets = new Set();
+  for (const candidate of plan) {
+    if (!candidate || candidate.kind !== 'fill' || !Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) return null;
+    const action = actions.find(action => action.kind === 'fill' && ['id', 'ref', 'target', 'text', 'inputName'].every(key => action[key] === candidate[key]));
+    if (!action || targets.has(action.target)) return null;
+    targets.add(action.target);
+    legal.push({ ...action, confidence: candidate.confidence });
+  }
+  return legal[0].id === selected.id ? legal : null;
 }

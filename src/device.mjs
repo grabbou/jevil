@@ -2,12 +2,14 @@ import { createAgentDeviceClient } from 'agent-device';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export class AgentDevice {
-  constructor({ app, platform = 'ios', device, udid, serial, scope, session, cwd, settleMs = 250, client } = {}) {
+  constructor({ app, platform = 'ios', device, udid, serial, scope, session, cwd, settleMs = 250, settle = true, client } = {}) {
     if (!app) throw new Error('An app bundle/package ID is required.');
     if (!['ios', 'android'].includes(platform)) throw new Error('This POC supports ios and android.');
     this.target = { app, platform, device, udid, serial };
     this.scope = scope;
+    if (typeof settle !== 'boolean') throw new Error('settle must be a boolean.');
     this.settleMs = settleMs;
+    this.settle = settle;
     this.client = client || createAgentDeviceClient({ session, cwd, lockPolicy: 'reject', lockPlatform: platform, responseLevel: 'full' });
   }
   async selectTarget() {
@@ -41,7 +43,8 @@ export class AgentDevice {
   snapshot() { return this.client.capture.snapshot({ forceFull: true, scope: this.scope, timeoutMs: 15_000 }); }
   async act(action, { signal } = {}) {
     signal?.throwIfAborted();
-    const settle = { settle: true, settleQuietMs: this.settleMs, timeoutMs: 5000 };
+    // The agent always obtains a fresh full snapshot before its next action.
+    const settle = this.settle ? { settle: true, settleQuietMs: this.settleMs, timeoutMs: 5000 } : {};
     switch (action.kind) {
       case 'press': return this.client.interactions.press({ ref: action.ref, ...settle });
       case 'fill': return this.client.interactions.fill({ ref: action.ref, text: action.text, ...settle });
