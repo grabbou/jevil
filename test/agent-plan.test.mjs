@@ -27,7 +27,7 @@ async function harness(t, options = {}) {
     act: async (action, { signal }) => {
       signal.throwIfAborted();
       calls.push({ kind: 'act', action });
-      await options.onAct?.(action, calls.filter(call => call.kind === 'act').length);
+      await options.onAct?.(action, calls.filter(call => call.kind === 'act').length, values);
       if (action.kind === 'fill') values[action.inputName] = action.text;
     },
   };
@@ -44,7 +44,7 @@ async function harness(t, options = {}) {
   const { formPlans = true, maxSteps = 10, minConfidence = 0 } = options;
   const agent = new JevDeviceAgent({ device, model, artifactsDir: directory, record: false, formPlans, maxSteps, minConfidence,
     onStep: entry => { events.push({ ...entry }); options.onStep?.(entry); } });
-  const result = await agent.generate({ prompt: 'Fill name and email.', inputs, abortSignal: options.abortSignal });
+  const result = await agent.generate({ prompt: options.prompt ?? 'Fill name and email.', inputs, abortSignal: options.abortSignal });
   const trace = (await readFile(join(result.directory, 'trace.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
   return { result, calls, decisions, events, trace, values };
 }
@@ -76,6 +76,25 @@ test('default opt-out retains one model decision per action', async t => {
   assert.equal(result.usage.requests, 3);
   assert.equal(result.steps.some(step => step.source === 'plan'), false);
   assert.equal(calls.filter(call => call.kind === 'act').length, 2);
+});
+
+test('autofill of a pending field asks the model again before any overwrite', async t => {
+  const autofilledEmail = 'autofilled@example.com';
+  const { result, calls, decisions, values } = await harness(t, {
+    prompt: 'Fill name. Fill email only if blank; never overwrite an existing email.',
+    onAct: (_action, count, values) => { if (count === 1) values.email = autofilledEmail; },
+    onDecision: (answer, args, count) => {
+      if (count === 2) {
+        assert.equal(args.state.screen.nodes.find(node => node.identifier === 'field-email').value, autofilledEmail);
+        answer.choice = 'qa_pass';
+      }
+    },
+  });
+  assert.equal(result.status, 'passed');
+  assert.equal(decisions.length, 2);
+  assert.equal(values.email, autofilledEmail);
+  assert.deepEqual(calls.filter(call => call.kind === 'act').map(call => call.action.target), ['field-name']);
+  assert.equal(result.steps.some(step => step.source === 'plan'), false);
 });
 for (const maxSteps of [1, 2]) test(`maxSteps=${maxSteps} counts every planned action`, async t => {
   const { result, calls } = await harness(t, { maxSteps });

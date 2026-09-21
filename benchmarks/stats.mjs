@@ -1,4 +1,5 @@
-const METRICS = ['elapsedMs', 'observeMs', 'inferMs', 'actMs', 'requests', 'inputTokens', 'actions'];
+const TOKEN_METRICS = ['inputTokens', 'outputTokens'];
+const METRICS = ['elapsedMs', 'observeMs', 'inferMs', 'actMs', 'requests', ...TOKEN_METRICS, 'actions'];
 
 /** Linear interpolation between adjacent order statistics (R type 7). */
 export function percentile(values, probability) {
@@ -25,6 +26,15 @@ function passed(row) {
   return row.status === 'passed' && row.oraclePassed === true;
 }
 
+function tokenDistribution(rows, metric) {
+  const stats = distribution(rows.map(row => row.usageComplete === true ? row[metric] : undefined));
+  return {
+    ...stats,
+    total: stats.missingOrInvalid ? null : stats.total,
+    knownTotal: distribution(rows.map(row => row[metric])).total,
+  };
+}
+
 function aggregate(rows) {
   const successes = rows.filter(passed);
   const failures = rows.filter(row => !passed(row));
@@ -35,7 +45,13 @@ function aggregate(rows) {
     falsePass: rows.filter(row => row.status === 'passed' && row.oraclePassed === false).length,
     unverifiedPass: rows.filter(row => row.status === 'passed' && typeof row.oraclePassed !== 'boolean').length,
     successRate: rows.length ? successes.length / rows.length : null,
-    allRuns: Object.fromEntries(METRICS.map(metric => [metric, distribution(rows.map(row => row[metric]))])),
+    usage: {
+      completeRuns: rows.filter(row => row.usageComplete === true).length,
+      incompleteRuns: rows.filter(row => row.usageComplete === false).length,
+      unknownRuns: rows.filter(row => typeof row.usageComplete !== 'boolean').length,
+    },
+    allRuns: Object.fromEntries(METRICS.map(metric => [metric, TOKEN_METRICS.includes(metric)
+      ? tokenDistribution(rows, metric) : distribution(rows.map(row => row[metric]))])),
     successfulLatencyMs: distribution(successes.map(row => row.elapsedMs)),
     failedLatencyMs: distribution(failures.map(row => row.elapsedMs)),
     statuses: Object.fromEntries([...new Set(rows.map(row => row.status))].sort().map(status => [status, rows.filter(row => row.status === status).length])),
@@ -137,6 +153,7 @@ export function summarize(rows, { baseline = 'baseline', iterations = 2000 } = {
     limitations: [
       'Speed comparisons include only pairs where both runs passed the independent oracle and have positive finite latency; examine failures and pair coverage alongside speedup.',
       'All-run latency includes failed attempts and is not a time-to-success metric. Reported latency excludes missing or invalid measurements.',
+      'Token distributions include only runs with explicitly complete usage and valid counters. Token totals are null if any measurement is incomplete, unknown or invalid; knownTotal includes partial counters and is only a lower bound in those cases.',
       'Intervals describe the sampled scenarios and conditions, not unseen tasks, devices or application states. Resampling assumes independent rounds within each scenario.',
       'Small samples and zero observed false passes do not prove safety or equal reliability. No multiple-comparison adjustment is applied.',
       'Small sample means fewer than 30 eligible pairs overall or fewer than 10 in any represented scenario.',
@@ -172,6 +189,13 @@ export function renderMarkdown(summary) {
   lines.push('', '* Small sample; treat as exploratory evidence.', '', '## Per scenario', '', ...lines.slice(4, 6));
   for (const [variant, stats] of Object.entries(summary.variants)) {
     for (const [scenario, scenarioStats] of Object.entries(stats.scenarios)) addRow(`${variant} / ${scenario}`, scenarioStats);
+  }
+  lines.push('', '## Token usage', '',
+    'Known token counts are lower bounds when usage is incomplete, unknown or invalid. Complete usage is provider-reported; invalid counters are excluded.', '',
+    '| Variant | Complete usage / attempts | Incomplete / unknown usage | Known input tokens | Known output tokens |',
+    '| --- | --- | --- | --- | --- |');
+  for (const [variant, stats] of Object.entries(summary.variants)) {
+    lines.push(`| ${label(variant)} | ${stats.usage.completeRuns}/${stats.attempted} | ${stats.usage.incompleteRuns}/${stats.usage.unknownRuns} | ${display(stats.allRuns.inputTokens.knownTotal, 0)} | ${display(stats.allRuns.outputTokens.knownTotal, 0)} |`);
   }
   lines.push('', '## Measurement limits', '', ...summary.limitations.map(value => `- ${value}`), '', `Bootstrap: ${summary.bootstrap.iterations} iterations, fixed seed ${summary.bootstrap.seed}. ${summary.bootstrap.method}`, '');
   return lines.join('\n');

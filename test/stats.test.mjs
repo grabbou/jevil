@@ -83,3 +83,46 @@ test('model versions accept both singular and array-valued observations', () => 
   ]);
   assert.deepEqual(result.variants.baseline.models, ['jev-1', 'jev-2']);
 });
+
+test('missing provider usage is not measured as zero tokens', () => {
+  const stats = summarize([row('baseline', 1, 100, {
+    usageComplete: false, inputTokens: 0, outputTokens: 0,
+  })]).variants.baseline;
+  assert.deepEqual(stats.usage, { completeRuns: 0, incompleteRuns: 1, unknownRuns: 0 });
+  for (const metric of ['inputTokens', 'outputTokens']) {
+    assert.deepEqual(stats.allRuns[metric], {
+      n: 0, missingOrInvalid: 1, median: null, p95: null, total: null, knownTotal: 0,
+    });
+  }
+});
+
+test('partial and unknown usage remain lower bounds and do not bias complete-token distributions', () => {
+  const summary = summarize([
+    row('baseline', 1, 100, { usageComplete: true, inputTokens: 100, outputTokens: 20 }),
+    row('baseline', 2, 100, { usageComplete: false, inputTokens: 30, outputTokens: 5, status: 'failed' }),
+    row('baseline', 3, 100, { inputTokens: 10, outputTokens: 2 }),
+  ]);
+  for (const stats of [summary.variants.baseline, summary.variants.baseline.scenarios.navigate]) {
+    assert.deepEqual(stats.usage, { completeRuns: 1, incompleteRuns: 1, unknownRuns: 1 });
+    assert.deepEqual(stats.allRuns.inputTokens, {
+      n: 1, missingOrInvalid: 2, median: 100, p95: 100, total: null, knownTotal: 140,
+    });
+    assert.equal(stats.allRuns.outputTokens.knownTotal, 27);
+    assert.equal(stats.allRuns.elapsedMs.n, 3);
+  }
+  assert.match(renderMarkdown(summary), /\| baseline \| 1\/3 \| 1\/1 \| 140 \| 27 \|/);
+});
+
+test('complete token totals remain exact while invalid counters make totals unknown', () => {
+  const rows = [row('baseline', 1, 100, { usageComplete: true, inputTokens: 100, outputTokens: 20 })];
+  const complete = summarize(rows).variants.baseline.allRuns;
+  assert.equal(complete.inputTokens.total, 100);
+  assert.equal(complete.outputTokens.total, 20);
+  rows.push(row('baseline', 2, 100, { usageComplete: true, inputTokens: -1 }));
+  const invalid = summarize(rows).variants.baseline.allRuns;
+  for (const metric of ['inputTokens', 'outputTokens']) {
+    assert.equal(invalid[metric].missingOrInvalid, 1);
+    assert.equal(invalid[metric].total, null);
+    assert.equal(invalid[metric].knownTotal, complete[metric].total);
+  }
+});

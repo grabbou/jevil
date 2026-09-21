@@ -87,7 +87,7 @@ export function resolvePlannedFill(originalAction, originalSnapshot, freshSnapsh
     }
 
     // Require positive screen identity beyond editable fields. Keyboard labels
-    // and editable values can legitimately change as a consequence of typing.
+    // and already executed fields can legitimately change after typing.
     const landmarks = (nodes, snapshot) => nodes.filter(node => !editable(node) && texts.has(role(node)) && observedInFrame(node, snapshot) && node.label)
       .map(node => JSON.stringify([role(node), node.label, node.identifier ?? null])).sort();
     const originalLandmarks = landmarks(originalNodes, originalSnapshot);
@@ -95,6 +95,9 @@ export function resolvePlannedFill(originalAction, originalSnapshot, freshSnapsh
     if (!originalLandmarks.length || JSON.stringify(originalLandmarks) !== JSON.stringify(freshLandmarks)) return null;
 
     const target = after.get(originalAction.target);
+    // Autofill or another actor may have changed a pending field. Its original
+    // decision no longer applies, even if the new value differs from the plan.
+    if (target?.value !== before.get(originalAction.target)?.value) return null;
     if (!target || freshNodes.filter(node => node.identifier === originalAction.target).length !== 1 ||
       !observedInFrame(target, freshSnapshot) || target.enabled !== true || target.hittable === false ||
       (target.hittable !== true && !geometryEligible(target, freshSnapshot)) || target.interactionBlocked ||
