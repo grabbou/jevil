@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { JevDeviceAgent, JevModel, AgentDevice } from './index.mjs';
+import { JevDeviceAgent, JevModel, ClefModel, AgentDevice } from './index.mjs';
+import { CLEF_INPUT_USD_PER_MILLION } from './clef.mjs';
 
 const HELP = `Usage: npm run qa -- --app <bundle/package ID> [options] "Task to perform"
 
@@ -11,7 +12,9 @@ const HELP = `Usage: npm run qa -- --app <bundle/package ID> [options] "Task to 
   --device <name>            Select a device by name
   --udid <id>                Pin an Apple simulator/device
   --serial <id>              Pin an Android emulator/device
-  --model <id>               Default: TYPESAFE_MODEL or jev-latest
+  --provider jev|clef        Default: jev
+  --model <id>               Default: TYPESAFE_MODEL or jev-latest for jev; clef for clef (or clef-flash)
+  --vision                   Also send a screenshot each step (clef only)
   --max-steps <n>            Default: 40
   --min-confidence <0..1>    Action cutoff; default: 0 (disabled)
   --timeout <seconds>        Default: 180; cancels model requests, stops between device calls
@@ -21,6 +24,7 @@ const HELP = `Usage: npm run qa -- --app <bundle/package ID> [options] "Task to 
   --help                    Show this help
 
 Set TYPESAFE_API_KEY through your environment or a local .env file.
+For --provider clef, set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Workers AI).
 Describe the expected outcome in the task. Put exact form values in double quotes.
 Jev finishes by choosing qa_pass, qa_fail, or incomplete.
 Exit codes: 0 QA pass, 1 QA fail, 2 incomplete, 3 runtime/config error.`;
@@ -30,7 +34,7 @@ async function main() {
   const { values: v, positionals } = parseArgs({ allowPositionals: true, options: {
     app: { type: 'string' }, platform: { type: 'string', default: 'ios' },
     device: { type: 'string' }, udid: { type: 'string' }, serial: { type: 'string' },
-    model: { type: 'string' }, 'max-steps': { type: 'string', default: '40' },
+    provider: { type: 'string', default: 'jev' }, model: { type: 'string' }, vision: { type: 'boolean', default: false }, 'max-steps': { type: 'string', default: '40' },
     'min-confidence': { type: 'string', default: '0' }, timeout: { type: 'string', default: '180' },
     scope: { type: 'string' }, artifacts: { type: 'string', default: 'artifacts' },
     'no-record': { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h' },
@@ -40,13 +44,16 @@ async function main() {
   if (!v.app || !prompt) throw new Error('Provide --app and a task prompt. Run npm run qa -- --help for examples.');
   // Keep this process's daemon state separate from other agent-device projects.
   process.env.AGENT_DEVICE_STATE_DIR ||= resolve('.agent-device');
-  const model = new JevModel({ model: v.model || process.env.TYPESAFE_MODEL || 'jev-latest' });
+  if (!['jev', 'clef'].includes(v.provider)) throw new Error('--provider must be jev or clef.');
+  const clef = v.provider === 'clef';
+  const model = clef ? new ClefModel({ model: v.model || 'clef' })
+    : new JevModel({ model: v.model || process.env.TYPESAFE_MODEL || 'jev-latest' });
   const device = new AgentDevice({ app: v.app, platform: v.platform, device: v.device, udid: v.udid,
     serial: v.serial, scope: v.scope, session: `jev-${randomUUID()}`, cwd: process.cwd() });
   const agent = new JevDeviceAgent({ model, device, maxSteps: Number(v['max-steps']),
     minConfidence: Number(v['min-confidence']), timeoutMs: Number(v.timeout) * 1000,
-    inputUsdPerMillion: Number(process.env.JEV_INPUT_USD_PER_MILLION || '0.042'),
-    artifactsDir: v.artifacts, record: !v['no-record'],
+    inputUsdPerMillion: clef ? CLEF_INPUT_USD_PER_MILLION[model.model] : Number(process.env.JEV_INPUT_USD_PER_MILLION || '0.042'),
+    artifactsDir: v.artifacts, record: !v['no-record'], vision: v.vision,
     onStep: step => console.log(`${step.step}. ${step.kind === 'verdict' ? 'Decision: ' + step.choice : 'Selected: ' + step.action} (${step.latencyMs.toFixed(0)} ms; confidence ${step.confidence.toFixed(2)})`),
   });
   const controller = new AbortController();
@@ -73,7 +80,7 @@ async function main() {
     console.log(`Actions executed: ${result.steps.filter(step => step.executed).length}${confidence}`);
     console.log(`Startup: ${(result.startupMs / 1000).toFixed(2)} s`);
     console.log(`Duration: ${(result.durationMs / 1000).toFixed(2)} s`);
-    console.log(`Jev input tokens: ${result.usage.inputTokens}`);
+    console.log(`${clef ? 'Clef' : 'Jev'} input tokens: ${result.usage.inputTokens}`);
     console.log(`Estimated inference cost: ${result.usage.requests === 0 ? '$0 (Jev was not called)' : result.estimatedInferenceCostUsd == null ? 'unavailable' : '$' + result.estimatedInferenceCostUsd.toFixed(8)}`);
     const videos = result.recording?.chunks?.map(chunk => chunk.path) || [result.recording?.outPath];
     const paths = videos.filter(Boolean);

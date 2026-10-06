@@ -9,14 +9,15 @@ function finite(value, name, min, max = Infinity) {
 }
 
 export class JevDeviceAgent {
-  constructor({ model, device, maxSteps = 40, minConfidence = 0, timeoutMs = 180_000, inputUsdPerMillion = 0.042, artifactsDir = 'artifacts', record = true, onStep } = {}) {
+  constructor({ model, device, maxSteps = 40, minConfidence = 0, timeoutMs = 180_000, inputUsdPerMillion = 0.042, artifactsDir = 'artifacts', record = true, vision = false, onStep } = {}) {
     if (!model?.decide || !device?.snapshot) throw new Error('model and device adapters are required.');
+    if (vision && !model.supportsImages) throw new Error('This model does not accept images. Use --provider clef for --vision.');
     finite(maxSteps, 'maxSteps', 1, 1000);
     if (!Number.isInteger(maxSteps)) throw new Error('maxSteps must be an integer.');
     finite(minConfidence, 'minConfidence', 0, 1);
     finite(timeoutMs, 'timeoutMs', 1, 3_600_000);
     finite(inputUsdPerMillion, 'inputUsdPerMillion', 0);
-    Object.assign(this, { model, device, maxSteps, minConfidence, timeoutMs, inputUsdPerMillion, artifactsDir, record, onStep });
+    Object.assign(this, { model, device, maxSteps, minConfidence, timeoutMs, inputUsdPerMillion, artifactsDir, record, vision, onStep });
     this.running = false;
   }
 
@@ -70,7 +71,8 @@ export class JevDeviceAgent {
         signal.throwIfAborted();
         const actions = buildActions(snapshot, inputs);
         const state = { task: prompt, screen: prepareSnapshot(snapshot), previousScreen, previousAction };
-        const decision = await query('decide', { state, actions });
+        const images = this.vision ? [await this.device.screenImage(join(directory, `screen-${step}.png`))] : undefined;
+        const decision = await query('decide', { state, actions, images });
         const usage = decision.usage;
         const action = actions.find(a => a.id === decision.choice);
         if (!action || !Number.isFinite(decision.confidence) || decision.confidence < 0 || decision.confidence > 1) throw new Error('Invalid model decision.');
@@ -139,7 +141,8 @@ export class JevDeviceAgent {
 
 function safeError(error) {
   let message = error instanceof Error ? error.message : String(error);
-  const key = process.env.TYPESAFE_API_KEY;
-  if (key) message = message.replaceAll(key, '[REDACTED]');
+  for (const key of [process.env.TYPESAFE_API_KEY, process.env.CLOUDFLARE_API_TOKEN]) {
+    if (key) message = message.replaceAll(key, '[REDACTED]');
+  }
   return message;
 }

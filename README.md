@@ -48,6 +48,20 @@ npm run qa -- --app com.example.shop --platform ios \
   'Search for "Canvas backpack" and verify that its product page opens.'
 ```
 
+## Use Clef instead of Jev
+
+Cloudflare's Clef decision models (`clef` and `clef-flash` on Workers AI) take the same choice question. Set `CLOUDFLARE_ACCOUNT_ID` and a Workers AI `CLOUDFLARE_API_TOKEN`, then pass `--provider clef`:
+
+```bash
+npm run qa -- --provider clef --model clef-flash \
+  --app com.apple.Preferences --platform ios \
+  "Open Accessibility, then Display & Text Size. Scroll to Smart Invert and verify that its switch is visible. Do not change any settings."
+```
+
+`--model` defaults to `clef`. Clef also accepts images: `--vision` sends a screenshot of the current screen with each decision (about 350 extra input tokens for a phone screenshot), for checks that depend on what is drawn rather than what the accessibility tree exposes. Each screenshot is saved as `screen-<step>.png`. Jev does not accept images, so `--vision` requires `--provider clef`.
+
+The cost estimate uses Workers AI's listed input price for the selected Clef model.
+
 ## Output
 
 The CLI prints each selected action, then the result, startup time, run duration, token usage, estimated inference cost, and video path. Run details are saved as JSON.

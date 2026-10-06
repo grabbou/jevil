@@ -1,5 +1,6 @@
 import { createAgentDeviceClient } from 'agent-device';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readFile } from 'node:fs/promises';
 
 export class AgentDevice {
   constructor({ app, platform = 'ios', device, udid, serial, scope, session, cwd, settleMs = 250, client } = {}) {
@@ -54,5 +55,9 @@ export class AgentDevice {
   startRecording(path) { return this.client.recording.record({ action: 'start', path }); }
   stopRecording() { return this.client.recording.record({ action: 'stop' }); }
   screenshot(path) { return this.client.capture.screenshot({ path }); }
+  async screenImage(path) {
+    await this.screenshot(path);
+    return `data:image/png;base64,${(await readFile(path)).toString('base64')}`;
+  }
   close() { return this.client.sessions.close(); }
 }
